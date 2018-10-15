@@ -16,30 +16,53 @@ class FastQuery:
         self.num_procs = num_procs
         self.thread_pool_size = thread_pool_size
 
-    def create_queues(self, args):
+    def create_queues(self):
         #  currently args[0] must be a list
-        data = args[0]
-        self.in_queue = multiprocessing.Queue()
+        data = self.args[0]
+        self.in_queue = multiprocessing.JoinableQueue()
         self.out_queue = multiprocessing.Queue()
         inputs = [self.in_queue.put(rec) for rec in data]
         #  place poison pills into the main multiprocessing FIFO queue
         for _ in range(self.num_procs):
             self.in_queue.put(None)
+        time.sleep(0.5)
         
-    def create_processes(self):
-        self.create_queues(self.args)
+    def create_and_run_processes(self):
+        self.create_queues()
         pool = []
-        for _ in range(num_procs):
+        for _ in range(self.num_procs):
             p = multiprocessing.Process(target=self.worker,
                                         args=(self.in_queue,
                                               self.out_queue),
                                         daemon=False)
             pool.append(p)
             pool[-1].start()
+        
+        self.in_queue.join()
+        for p in pool:
+            p.join()
+        
+    def collect_results(self):
+        output = []
+        while not self.out_queue.empty():
+            output.append(self.out_queue.get())
+        return output
+
+    def run(self):
+        self.create_queues()
+        self.create_and_run_processes()
+        return self.collect_results()
 
     def worker(self, in_q, out_q):
         print(multiprocessing.current_process().name, "working")
-        func = self.target
+        while True:
+            data = in_q.get()
+            if data is None:
+                in_q.task_done()
+                break
+            result = self.execute_threads(self.target, data)
+            in_q.task_done()
+            out_q.put(result)
                 
     def thread_worker(self, func, in_q, out_q):
         while True:
@@ -51,10 +74,10 @@ class FastQuery:
             out_q.put(result)
             in_q.task_done()
 
-    def execute_threads(self, func):
+    def execute_threads(self, func, input_data):
         q = queue.Queue()
         results_queue = queue.Queue()
-        self.populate_thread_queue(q)
+        q.put(input_data)
         self.poison_thread_queue(q)
         threads = []
 
